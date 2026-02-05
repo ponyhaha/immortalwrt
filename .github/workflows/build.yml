@@ -1,3 +1,46 @@
+name: Build NSS 固件
+
+on:
+  workflow_dispatch:          # ← 必须有这个，页面才会出现 Run workflow
+    inputs:
+      target:
+        description: '目标芯片'
+        required: true
+        default: 'ipq60xx'
+      subtarget:
+        description: '子目标'
+        required: true
+        default: 'generic'
+      profile:
+        description: '机型'
+        required: true
+        default: 'jdcloud_re-cs-07'
+      enable_nss:
+        description: '启用NSS硬件加速'
+        required: true
+        default: 'true'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+            gettext git java-propose-classpath libelf-dev libncurses5-dev \
+            libncursesw5-dev libssl-dev python python2.7-dev python3 unzip wget \
+            python3-distutils python3-setuptools python3-dev rsync subversion \
+            swig time xsltproc zlib1g-dev
+
+      - name: Init & feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Configure NSS & Plugins
         if: github.event.inputs.enable_nss == 'true'
         run: |
@@ -32,7 +75,7 @@
           echo "CONFIG_PACKAGE_luci-app-vlmcsd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
 
-          # 常用基础工具
+          # 常用工具链
           echo "CONFIG_PACKAGE_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci-base=y" >> .config
           echo "CONFIG_PACKAGE_luci-theme-bootstrap=y" >> .config
@@ -48,5 +91,16 @@
           echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
           echo "CONFIG_PACKAGE_ca-certificates=y" >> .config
 
-          # RootFS 512 M 大内核
+          # 大内核 512 MB
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+
+      - name: Download & Build
+        run: |
+          make download -j8
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-nss-bin
+          path: bin/targets/*/*/*sysupgrade.bin
