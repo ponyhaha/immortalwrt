@@ -1,37 +1,23 @@
-name: Build ER1 (ImmortalWrt + iStoreOS feeds + NSS)
+name: Build ER1 (ImmortalWrt + iStoreOS + NSS)
 
 on:
   workflow_dispatch:
-    inputs:
-      upload_artifacts:
-        description: "Upload build artifacts"
-        required: false
-        default: "true"
-      keep_dl_cache:
-        description: "Cache dl directory (faster rebuilds)"
-        required: false
-        default: "true"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: read
 
     env:
-      # 你仓库里放的配置文件名
+      TZ: Asia/Shanghai
       CONFIG_FILE: er1.config
-      # 让 OpenWrt 使用 ccache
       USE_CCACHE: "1"
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      # 统一时区（不影响结果，只是日志更直观）
-      TZ: Asia/Shanghai
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Init system deps
+      - name: Init dependencies
         run: |
           sudo apt update
           sudo apt install -y --no-install-recommends \
@@ -40,15 +26,9 @@ jobs:
             rsync unzip zlib1g-dev file wget ca-certificates \
             ccache jq time
           sudo timedatectl set-timezone "$TZ" || true
-
-      - name: Show build info
-        run: |
-          echo "Runner: $(uname -a)"
           echo "CPU: $(nproc)"
           df -h
-          free -h
 
-      # ccache：缓存编译产物（强烈建议开）
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -58,9 +38,7 @@ jobs:
             ccache-${{ runner.os }}-${{ github.ref_name }}-
             ccache-${{ runner.os }}-
 
-      # dl：缓存源码下载（可选，通常很有用）
       - name: Restore dl cache
-        if: ${{ inputs.keep_dl_cache == 'true' }}
         uses: actions/cache@v4
         with:
           path: dl
@@ -74,24 +52,47 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 你前面说 diy.sh 用 iStoreOS 源：这里直接调用
-      - name: Add iStoreOS feeds (diy.sh)
+      - name: Apply iStoreOS feeds (diy.sh)
         run: |
           test -f diy.sh || (echo "ERROR: diy.sh not found in repo root" && exit 1)
           chmod +x diy.sh
           ./diy.sh
 
-      - name: Load config & defconfig
+      - name: Load config (er1.config) and defconfig
         run: |
           test -f "$CONFIG_FILE" || (echo "ERROR: $CONFIG_FILE not found in repo root" && exit 1)
           cp "$CONFIG_FILE" .config
           make defconfig
-          echo "==== .config (target snippet) ===="
-          grep -E "CONFIG_TARGET_|CONFIG_PACKAGE_luci|CONFIG_PACKAGE_luci-app" .config | head -n 200 || true
+          echo "==== Target check ===="
+          grep -E "CONFIG_TARGET_|CONFIG_TARGET.*DEVICE" .config | head -n 200 || true
 
       - name: Download sources
         run: |
           mkdir -p dl
           make download -j"$(nproc)" V=s
-          # 清理过小的下载残片（常见于网络中断）
-          find dl -type f -size -102
+          find dl -type f -size -1024c -print -delete || true
+
+      - name: Build firmware
+        run: |
+          ccache -z || true
+          time make -j"$(nproc)" V=s
+          ccache -s || true
+
+      - name: List outputs
+        run: |
+          echo "==== bin/targets ===="
+          ls -lah bin/targets || true
+          echo "==== firmware candidates ===="
+          find bin/targets -maxdepth 6 -type f \( \
+            -name "*factory*.bin" -o -name "*sysupgrade*.bin" -o -name "*initramfs*.bin" -o \
+            -name "*.manifest" -o -name "*.buildinfo" -o -name "*.sha256sums" \
+          \) -print || true
+
+      - name: Upload artifacts (firmware)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ER1-ImmortalWrt
+          path: |
+            bin/targets/**/*
+            .config
+          if-no-files-found: error
